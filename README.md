@@ -6,9 +6,11 @@ I'm releasing a handy tool for the Mortar, one of PUBG's weapons.
 
 [ ver,1.6-PUBGMortarMapDevice.html ] をdownload
 
-[ images ] をdownload
+[ images ] の中の画像を全部ダウンロード
+Download all images in [images].
 
-Only two downloads. Nothing else is needed.
+
+That's all you need to prepare. Now let's get ready.
 
 
 使い方だぜ
@@ -26,9 +28,9 @@ Create a file named “PUBG-MortarMAPTool” in Explorer.
 Import the downloaded HTML code and images into the folder
 
 ３
-画像を[images]フォルダにインポート
+[images]フォルダを作成し画像をインポート
 
-Import images into the [images] folder
+Create an [images] folder and import the images.
 
 以上。これだけ。
 All set.
