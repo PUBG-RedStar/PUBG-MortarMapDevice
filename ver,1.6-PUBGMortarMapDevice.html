@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>Game Map Distance Tool</title>
+    <style>
+        body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #1a1a1a; color: white; margin: 0; overflow: hidden; }
+        .ui-panel { position: absolute; top: 10px; left: 10px; z-index: 10; background: rgba(30, 30, 30, 0.9); padding: 15px; border-radius: 10px; border: 1px solid #444; box-shadow: 0 4px 15px rgba(0,0,0,0.5); width: 220px; }
+        canvas { cursor: crosshair; background: #000; }
+        .result { font-size: 1.3em; font-weight: bold; color: #00ffcc; margin: 10px 0; line-height: 1.2; }
+        .guide { font-size: 0.85em; color: #aaa; border-top: 1px solid #444; pt: 8px; margin-top: 8px; padding-top: 8px; }
+        select, button { background: #444; color: white; border: 1px solid #666; padding: 8px; border-radius: 4px; width: 100%; margin-bottom: 8px; cursor: pointer; }
+        button:hover { background: #555; }
+        .highlight { color: #ffeb3b; }
+
+        /* ズームUIのスタイル */
+        .zoom-container { margin-bottom: 15px; }
+        .zoom-label { font-size: 0.8em; color: #ccc; margin-bottom: 5px; display: block; }
+        .zoom-steps { display: flex; gap: 4px; height: 12px; align-items: center; }
+        .zoom-step { flex: 1; height: 6px; background: #444; border-radius: 3px; cursor: pointer; transition: 0.2s; }
+        .zoom-step:hover { background: #666; }
+        .zoom-step.active { background: #00ffcc; height: 10px; box-shadow: 0 0 8px rgba(0, 255, 204, 0.6); }
+    </style>
+</head>
+<body>
+
+    <div class="ui-panel">
+        <label>マップ切り替え:</label>
+        <select id="mapSelector"></select>
+        
+        <input type="file" id="fileInput" accept="image/*" style="display:none;">
+        <button onclick="document.getElementById('fileInput').click()">外部画像を読み込む</button>
+        <button onclick="clearPoints()">地点リセット (R)</button>
+        <button onclick="resetView()">表示位置リセット</button>
+
+        <div class="zoom-container">
+            <span class="zoom-label">ズームレベル (クリックで切替):</span>
+            <div class="zoom-steps" id="zoomUI">
+                <div class="zoom-step" onclick="changeZoomStep(0)"></div>
+                <div class="zoom-step" onclick="changeZoomStep(1)"></div>
+                <div class="zoom-step" onclick="changeZoomStep(2)"></div>
+                <div class="zoom-step" onclick="changeZoomStep(3)"></div>
+                <div class="zoom-step" onclick="changeZoomStep(4)"></div>
+            </div>
+        </div>
+
+        <div class="result" id="resultDisplay">右クリックで計測開始</div>
+        
+        <div class="guide">
+            <span class="highlight">●</span> 左ドラッグ：マップ移動<br>
+            <span class="highlight">●</span> 右クリック：地点配置 (2点)<br>
+            <span class="highlight">●</span> ホイール：拡大・縮小<br>
+            <span class="highlight">●</span> Rキー：リセット
+        </div>
+    </div>
+
+    <canvas id="mapCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const mapSelector = document.getElementById('mapSelector');
+        const resultDisplay = document.getElementById('resultDisplay');
+        const zoomUIChildren = document.getElementById('zoomUI').children;
+
+        // 設定
+        const MAP_REAL_SIDE_M = 8000; 
+        const GRID_SIZE_M = 100;
+        
+        const mapData = [
+            { name: 'Erangel', path: 'images/1_erangel_mapimage.webp' },
+            { name: 'Miramar', path: 'images/2_miramar_mapimage.webp' },
+            { name: 'Teago', path: 'images/3_teago_mapimage.webp' },
+            { name: 'Vikendi', path: 'images/vikendi_mapimage.webp' },
+            { name: 'Rondo', path: 'images/rondo_mapimage.webp' }
+        ];
+
+        let mapImage = new Image();
+        let points = []; 
+        let scale = 1.0;
+        let zoomLevels = []; 
+        let scaleIndex = 0;
+
+        let offsetX = 0;
+        let offsetY = 0;
+        let isPanning = false;
+        let startX, startY;
+
+        function initSelector() {
+            mapData.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.path;
+                option.textContent = item.name;
+                mapSelector.appendChild(option);
+            });
+            mapImage.src = mapData[0].path;
+        }
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            resetView();
+        });
+
+        mapImage.onload = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            resetView();
+        };
+
+        function resetView() {
+            if (!mapImage.naturalWidth) return;
+
+            const scaleW = canvas.width / mapImage.naturalWidth;
+            const scaleH = canvas.height / mapImage.naturalHeight;
+            const fitScale = Math.min(scaleW, scaleH) * 0.9;
+
+            // 最大拡大率を調整 (1x, 2x, 3x, 5x, 8x)
+            zoomLevels = [
+                fitScale,
+                fitScale * 2,
+                fitScale * 3,
+                fitScale * 5,
+                fitScale * 8
+            ];
+
+            scaleIndex = 0;
+            scale = zoomLevels[scaleIndex];
+
+            offsetX = (canvas.width - mapImage.naturalWidth * scale) / 2;
+            offsetY = (canvas.height - mapImage.naturalHeight * scale) / 2;
+            
+            updateZoomUI();
+            draw();
+        }
+
+        // --- 操作系 ---
+
+        // UIクリックでのズーム変更
+        function changeZoomStep(index) {
+            const oldScale = scale;
+            scaleIndex = index;
+            scale = zoomLevels[scaleIndex];
+
+            // 画面の中央に向かってズーム
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            offsetX = centerX - (centerX - offsetX) * (scale / oldScale);
+            offsetY = centerY - (centerY - offsetY) * (scale / oldScale);
+
+            updateZoomUI();
+            draw();
+        }
+
+        // ズームUIの見た目を更新
+        function updateZoomUI() {
+            for (let i = 0; i < zoomUIChildren.length; i++) {
+                if (i === scaleIndex) {
+                    zoomUIChildren[i].classList.add('active');
+                } else {
+                    zoomUIChildren[i].classList.remove('active');
+                }
+            }
+        }
+
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const oldScale = scale;
+            
+            if (e.deltaY < 0) {
+                if (scaleIndex < zoomLevels.length - 1) scaleIndex++;
+            } else {
+                if (scaleIndex > 0) scaleIndex--;
+            }
+
+            scale = zoomLevels[scaleIndex];
+
+            const mouseX = e.clientX;
+            const mouseY = e.clientY;
+            offsetX = mouseX - (mouseX - offsetX) * (scale / oldScale);
+            offsetY = mouseY - (mouseY - offsetY) * (scale / oldScale);
+
+            updateZoomUI();
+            draw();
+        }, { passive: false });
+
+
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0) {
+                isPanning = true;
+                startX = e.clientX - offsetX;
+                startY = e.clientY - offsetY;
+                canvas.style.cursor = 'grabbing';
+            } else if (e.button === 2) {
+                const mapX = (e.clientX - offsetX) / scale;
+                const mapY = (e.clientY - offsetY) / scale;
+
+                if (mapX < 0 || mapX > mapImage.naturalWidth || 
+                    mapY < 0 || mapY > mapImage.naturalHeight) {
+                    return;
+                }
+
+                if (points.length >= 2) points = [];
+                points.push({x: mapX, y: mapY});
+                calculateDistance();
+                draw();
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (isPanning) {
+                offsetX = e.clientX - startX;
+                offsetY = e.clientY - startY;
+                draw();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            isPanning = false;
+            canvas.style.cursor = 'crosshair';
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key.toLowerCase() === 'r') clearPoints();
+        });
+
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+        // --- 描画・計算 ---
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.save();
+            ctx.translate(offsetX, offsetY);
+            ctx.scale(scale, scale);
+
+            if (mapImage.complete) {
+                ctx.drawImage(mapImage, 0, 0);
+                
+                const p100m = (mapImage.naturalWidth / MAP_REAL_SIDE_M) * GRID_SIZE_M;
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
+                ctx.lineWidth = 1 / scale;
+                ctx.beginPath();
+                for (let i = 0; i <= mapImage.naturalWidth; i += p100m) {
+                    ctx.moveTo(i, 0); ctx.lineTo(i, mapImage.naturalHeight);
+                }
+                for (let i = 0; i <= mapImage.naturalHeight; i += p100m) {
+                    ctx.moveTo(0, i); ctx.lineTo(mapImage.naturalWidth, i);
+                }
+                ctx.stroke();
+            }
+
+            if (points.length > 0) {
+                ctx.strokeStyle = "#00ffcc";
+                ctx.fillStyle = "#00ffcc";
+                ctx.lineWidth = 3 / scale;
+                
+                points.forEach((p, i) => {
+                    ctx.beginPath();
+                    ctx.arc(p.x, p.y, 6 / scale, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+
+                if (points.length === 2) {
+                    ctx.beginPath();
+                    ctx.moveTo(points[0].x, points[0].y);
+                    ctx.lineTo(points[1].x, points[1].y);
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+        }
+
+        function calculateDistance() {
+            if (points.length < 2) return;
+            const dx = points[1].x - points[0].x;
+            const dy = points[1].y - points[0].y;
+            const distPx = Math.sqrt(dx*dx + dy*dy);
+            const mPerPx = MAP_REAL_SIDE_M / mapImage.naturalWidth;
+            const totalM = distPx * mPerPx;
+            
+            resultDisplay.innerHTML = `距離: ${totalM.toFixed(1)} m<br><span style="font-size:0.8em; color:#aaa;">(${(totalM/1000).toFixed(3)} km)</span>`;
+        }
+
+        function clearPoints() {
+            points = [];
+            resultDisplay.innerHTML = "右クリックで計測開始";
+            draw();
+        }
+
+        mapSelector.onchange = (e) => { 
+            mapImage.src = e.target.value; 
+            points = []; 
+        };
+
+        document.getElementById('fileInput').onchange = (e) => {
+            const reader = new FileReader();
+            reader.onload = (ev) => { mapImage.src = ev.target.result; points = []; };
+            reader.readAsDataURL(e.target.files[0]);
+        };
+
+        initSelector();
+    </script>
+</body>
+</html>
