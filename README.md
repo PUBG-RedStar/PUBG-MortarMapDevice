@@ -43,3 +43,5 @@ Launch HTML to open your browser, then simply select any map and choose two poin
 I'm using a translation tool for the Readme.
 It might feel a bit off, but please don't complain.
 Thank you.
+
+連絡先:Discord ［sekijou］
